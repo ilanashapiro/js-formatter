@@ -3,13 +3,13 @@ import { createFromBuffer, createStreaming, Formatter, GlobalConfiguration } fro
 
 Deno.test("it should create streaming", async () => {
   const formatter = await createStreaming(
-    fetch("https://plugins.dprint.dev/json-0.13.0.wasm"),
+    fetch("https://plugins.dprint.dev/json-0.19.1.wasm"),
   );
   runGeneralJsonFormatterTests(formatter);
 });
 
 Deno.test("it should create from buffer", async () => {
-  const buffer = await fetch("https://plugins.dprint.dev/json-0.13.0.wasm")
+  const buffer = await fetch("https://plugins.dprint.dev/json-0.19.1.wasm")
     .then((r) => r.arrayBuffer());
   const formatter = createFromBuffer(buffer);
   runGeneralJsonFormatterTests(formatter);
@@ -27,22 +27,25 @@ function runGeneralJsonFormatterTests(formatter: Formatter) {
   assertEquals(formatter.getLicenseText().includes("MIT"), true);
   assertEquals(formatter.getPluginInfo(), {
     name: "dprint-plugin-json",
-    version: "0.13.0",
+    version: "0.19.1",
     configKey: "json",
-    fileExtensions: ["json", "jsonc"],
-    fileNames: [],
     helpUrl: "https://dprint.dev/plugins/json",
-    configSchemaUrl: "https://plugins.dprint.dev/schemas/json-0.13.0.json",
+    configSchemaUrl: "https://plugins.dprint.dev/dprint/dprint-plugin-json/0.19.1/schema.json",
+    updateUrl: "https://plugins.dprint.dev/dprint/dprint-plugin-json/latest.json",
+    fileExtensions: [ "json", "jsonc" ],
+    fileNames: []
   });
   assertEquals(formatter.getResolvedConfig(), {
-    "array.preferSingleLine": true,
+    lineWidth: 30,
+    useTabs: false,
+    indentWidth: 4,
+    newLineKind: "lf",
     "commentLine.forceSpaceAfterSlashes": true,
     ignoreNodeCommentText: "dprint-ignore",
-    indentWidth: 4,
-    lineWidth: 30,
-    newLineKind: "lf",
+    "array.preferSingleLine": true,
     "object.preferSingleLine": true,
-    useTabs: false,
+    trailingCommas: "jsonc",
+    jsonTrailingCommaFiles: []
   });
   assertEquals(
     formatter.formatText("file.json", "{\ntest: [ \n1, \n2] }"),

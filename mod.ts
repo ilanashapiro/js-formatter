@@ -98,10 +98,10 @@ export function createStreaming(
   response: Promise<ResponseLike>,
 ): Promise<Formatter> {
   if (typeof WebAssembly.instantiateStreaming === "function") {
-    return WebAssembly
-      // deno-lint-ignore no-explicit-any
-      .instantiateStreaming(response as any, createImportObject())
-      .then((obj) => createFromInstance(obj.instance));
+    return response
+    .then((r) => r.arrayBuffer())
+    .then((b) => WebAssembly.instantiate(b, createImportObject()))
+    .then((obj) => createFromInstance(obj.instance));
   } else {
     // fallback for node.js
     return getArrayBuffer()
