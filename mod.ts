@@ -96,12 +96,12 @@ export interface ResponseLike {
  */
 export function createStreaming(
   response: Promise<ResponseLike>,
-): Promise<Formatter> {
+): Promise<Formatter[]> {
   if (typeof WebAssembly.instantiateStreaming === "function") {
     return response
-    .then((r) => r.arrayBuffer())
-    .then((b) => WebAssembly.instantiate(b, createImportObject()))
-    .then((obj) => createFromInstance(obj.instance));
+    .then((resolvedResponse) => resolvedResponse.arrayBuffer())
+    .then((buffer) => WebAssembly.instantiate(buffer, createImportObject()))
+    .then((obj) => createFromInstance([obj.instance]));
   } else {
     // fallback for node.js
     return getArrayBuffer()
@@ -125,13 +125,13 @@ export function createStreaming(
  * Creates a formatter from the specified wasm module bytes.
  * @param wasmModuleBuffer - The buffer of the wasm module.
  */
-export function createFromBuffer(wasmModuleBuffer: BufferSource): Formatter {
+export function createFromBuffer(wasmModuleBuffer: BufferSource): Formatter[] {
   const wasmModule = new WebAssembly.Module(wasmModuleBuffer);
   const wasmInstance = new WebAssembly.Instance(
     wasmModule,
     createImportObject(),
   );
-  return createFromInstance(wasmInstance);
+  return createFromInstance([wasmInstance]);
 }
 
 /**
@@ -139,179 +139,185 @@ export function createFromBuffer(wasmModuleBuffer: BufferSource): Formatter {
  * @param wasmInstance - The WebAssembly instance.
  */
 export function createFromInstance(
-  wasmInstance: WebAssembly.Instance,
-): Formatter {
-  // deno-lint-ignore no-explicit-any
-  const wasmExports = wasmInstance.exports as any;
-  const {
-    // deno-lint-ignore camelcase
-    get_plugin_schema_version,
-    // deno-lint-ignore camelcase
-    set_file_path,
-    // deno-lint-ignore camelcase
-    set_override_config,
-    // deno-lint-ignore camelcase
-    get_formatted_text,
-    format,
-    // deno-lint-ignore camelcase
-    get_error_text,
-    // deno-lint-ignore camelcase
-    get_plugin_info,
-    // deno-lint-ignore camelcase
-    get_resolved_config,
-    // deno-lint-ignore camelcase
-    get_config_diagnostics,
-    // deno-lint-ignore camelcase
-    set_global_config,
-    // deno-lint-ignore camelcase
-    set_plugin_config,
-    // deno-lint-ignore camelcase
-    get_license_text,
-    // deno-lint-ignore camelcase
-    get_wasm_memory_buffer,
-    // deno-lint-ignore camelcase
-    get_wasm_memory_buffer_size,
-    // deno-lint-ignore camelcase
-    add_to_shared_bytes_from_buffer,
-    // deno-lint-ignore camelcase
-    set_buffer_with_shared_bytes,
-    // deno-lint-ignore camelcase
-    clear_shared_bytes,
-    // deno-lint-ignore camelcase
-    reset_config,
-  } = wasmExports;
+  wasmInstances: WebAssembly.Instance[],
+): Formatter[] {
+  let formatters = <Formatter[]>[]
+  wasmInstances.forEach(wasmInstance => {
+    // deno-lint-ignore no-explicit-any
+    const wasmExports = wasmInstance.exports as any;
+    const {
+      // deno-lint-ignore camelcase
+      get_plugin_schema_version,
+      // deno-lint-ignore camelcase
+      set_file_path,
+      // deno-lint-ignore camelcase
+      set_override_config,
+      // deno-lint-ignore camelcase
+      get_formatted_text,
+      format,
+      // deno-lint-ignore camelcase
+      get_error_text,
+      // deno-lint-ignore camelcase
+      get_plugin_info,
+      // deno-lint-ignore camelcase
+      get_resolved_config,
+      // deno-lint-ignore camelcase
+      get_config_diagnostics,
+      // deno-lint-ignore camelcase
+      set_global_config,
+      // deno-lint-ignore camelcase
+      set_plugin_config,
+      // deno-lint-ignore camelcase
+      get_license_text,
+      // deno-lint-ignore camelcase
+      get_wasm_memory_buffer,
+      // deno-lint-ignore camelcase
+      get_wasm_memory_buffer_size,
+      // deno-lint-ignore camelcase
+      add_to_shared_bytes_from_buffer,
+      // deno-lint-ignore camelcase
+      set_buffer_with_shared_bytes,
+      // deno-lint-ignore camelcase
+      clear_shared_bytes,
+      // deno-lint-ignore camelcase
+      reset_config,
+    } = wasmExports;
 
-  const pluginSchemaVersion = get_plugin_schema_version();
-  const expectedPluginSchemaVersion = 3;
-  if (
-    pluginSchemaVersion !== 2
-    && pluginSchemaVersion !== expectedPluginSchemaVersion
-  ) {
-    throw new Error(
-      `Not compatible plugin. `
-        + `Expected schema ${expectedPluginSchemaVersion}, `
-        + `but plugin had ${pluginSchemaVersion}.`,
-    );
-  }
+    const pluginSchemaVersion = get_plugin_schema_version();
+    const expectedPluginSchemaVersion = 3;
+    if (
+      pluginSchemaVersion !== 2
+      && pluginSchemaVersion !== expectedPluginSchemaVersion
+    ) {
+      throw new Error(
+        `Not compatible plugin. `
+          + `Expected schema ${expectedPluginSchemaVersion}, `
+          + `but plugin had ${pluginSchemaVersion}.`,
+      );
+    }
 
-  const bufferSize = get_wasm_memory_buffer_size();
-  let configSet = false;
+    const bufferSize = get_wasm_memory_buffer_size();
+    let configSet = false;
 
-  return {
-    setConfig(globalConfig, pluginConfig) {
-      setConfig(globalConfig, pluginConfig);
-    },
-    getConfigDiagnostics() {
-      setConfigIfNotSet();
-      const length = get_config_diagnostics();
-      return JSON.parse(receiveString(length));
-    },
-    getResolvedConfig() {
-      setConfigIfNotSet();
-      const length = get_resolved_config();
-      return JSON.parse(receiveString(length));
-    },
-    getPluginInfo() {
-      const length = get_plugin_info();
-      const pluginInfo = JSON.parse(receiveString(length)) as PluginInfo;
-      pluginInfo.fileNames = pluginInfo.fileNames ?? [];
-      return pluginInfo;
-    },
-    getLicenseText() {
-      const length = get_license_text();
-      return receiveString(length);
-    },
-    formatText(filePath, fileText, overrideConfig) {
-      setConfigIfNotSet();
-      if (overrideConfig != null) {
-        if (pluginSchemaVersion === 2) {
-          throw new Error(
-            "Cannot set the override configuration for this old plugin.",
-          );
+    const instance = {
+      setConfig(globalConfig, pluginConfig) {
+        setConfig(globalConfig, pluginConfig);
+      },
+      getConfigDiagnostics() {
+        setConfigIfNotSet();
+        const length = get_config_diagnostics();
+        return JSON.parse(receiveString(length));
+      },
+      getResolvedConfig() {
+        setConfigIfNotSet();
+        const length = get_resolved_config();
+        return JSON.parse(receiveString(length));
+      },
+      getPluginInfo() {
+        const length = get_plugin_info();
+        const pluginInfo = JSON.parse(receiveString(length)) as PluginInfo;
+        pluginInfo.fileNames = pluginInfo.fileNames ?? [];
+        return pluginInfo;
+      },
+      getLicenseText() {
+        const length = get_license_text();
+        return receiveString(length);
+      },
+      formatText(filePath, fileText, overrideConfig) {
+        setConfigIfNotSet();
+        if (overrideConfig != null) {
+          if (pluginSchemaVersion === 2) {
+            throw new Error(
+              "Cannot set the override configuration for this old plugin.",
+            );
+          }
+          sendString(JSON.stringify(overrideConfig));
+          set_override_config();
         }
-        sendString(JSON.stringify(overrideConfig));
-        set_override_config();
+        sendString(filePath);
+        set_file_path();
+
+        sendString(fileText);
+        const responseCode = format();
+        switch (responseCode) {
+          case 0: // no change
+            return fileText;
+          case 1: // change
+            return receiveString(get_formatted_text());
+          case 2: // error
+            throw new Error(receiveString(get_error_text()));
+          default:
+            throw new Error(`Unexpected response code: ${responseCode}`);
+        }
       }
-      sendString(filePath);
-      set_file_path();
+    } as Formatter;
 
-      sendString(fileText);
-      const responseCode = format();
-      switch (responseCode) {
-        case 0: // no change
-          return fileText;
-        case 1: // change
-          return receiveString(get_formatted_text());
-        case 2: // error
-          throw new Error(receiveString(get_error_text()));
-        default:
-          throw new Error(`Unexpected response code: ${responseCode}`);
+    formatters.push(instance)
+
+    function setConfigIfNotSet() {
+      if (!configSet) {
+        setConfig({}, {});
       }
-    },
-  };
-
-  function setConfigIfNotSet() {
-    if (!configSet) {
-      setConfig({}, {});
     }
-  }
 
-  function setConfig(
-    globalConfig: GlobalConfiguration,
-    pluginConfig: Record<string, unknown>,
-  ) {
-    if (reset_config != null) {
-      reset_config();
-    }
-    sendString(JSON.stringify(globalConfig));
-    set_global_config();
-    sendString(JSON.stringify(pluginConfig));
-    set_plugin_config();
-    configSet = true;
-  }
-
-  function sendString(text: string) {
-    const encoder = new TextEncoder();
-    const encodedText = encoder.encode(text);
-    const length = encodedText.length;
-
-    clear_shared_bytes(length);
-
-    let index = 0;
-    while (index < length) {
-      const writeCount = Math.min(length - index, bufferSize);
-      const wasmBuffer = getWasmBuffer(writeCount);
-      for (let i = 0; i < writeCount; i++) {
-        wasmBuffer[i] = encodedText[index + i];
+    function setConfig(
+      globalConfig: GlobalConfiguration,
+      pluginConfig: Record<string, unknown>,
+    ) {
+      if (reset_config != null) {
+        reset_config();
       }
-      add_to_shared_bytes_from_buffer(writeCount);
-      index += writeCount;
+      sendString(JSON.stringify(globalConfig));
+      set_global_config();
+      sendString(JSON.stringify(pluginConfig));
+      set_plugin_config();
+      configSet = true;
     }
-  }
 
-  function receiveString(length: number) {
-    const buffer = new Uint8Array(length);
-    let index = 0;
-    while (index < length) {
-      const readCount = Math.min(length - index, bufferSize);
-      set_buffer_with_shared_bytes(index, readCount);
-      const wasmBuffer = getWasmBuffer(readCount);
-      for (let i = 0; i < readCount; i++) {
-        buffer[index + i] = wasmBuffer[i];
+    function sendString(text: string) {
+      const encoder = new TextEncoder();
+      const encodedText = encoder.encode(text);
+      const length = encodedText.length;
+
+      clear_shared_bytes(length);
+
+      let index = 0;
+      while (index < length) {
+        const writeCount = Math.min(length - index, bufferSize);
+        const wasmBuffer = getWasmBuffer(writeCount);
+        for (let i = 0; i < writeCount; i++) {
+          wasmBuffer[i] = encodedText[index + i];
+        }
+        add_to_shared_bytes_from_buffer(writeCount);
+        index += writeCount;
       }
-      index += readCount;
     }
-    const decoder = new TextDecoder();
-    return decoder.decode(buffer);
-  }
 
-  function getWasmBuffer(length: number) {
-    const pointer = get_wasm_memory_buffer();
-    return new Uint8Array(
-      // deno-lint-ignore no-explicit-any
-      (wasmInstance.exports.memory as any).buffer,
-      pointer,
-      length,
-    );
-  }
+    function receiveString(length: number) {
+      const buffer = new Uint8Array(length);
+      let index = 0;
+      while (index < length) {
+        const readCount = Math.min(length - index, bufferSize);
+        set_buffer_with_shared_bytes(index, readCount);
+        const wasmBuffer = getWasmBuffer(readCount);
+        for (let i = 0; i < readCount; i++) {
+          buffer[index + i] = wasmBuffer[i];
+        }
+        index += readCount;
+      }
+      const decoder = new TextDecoder();
+      return decoder.decode(buffer);
+    }
+
+    function getWasmBuffer(length: number) {
+      const pointer = get_wasm_memory_buffer();
+      return new Uint8Array(
+        // deno-lint-ignore no-explicit-any
+        (wasmInstance.exports.memory as any).buffer,
+        pointer,
+        length,
+      );
+    }
+  });
+  return formatters;
 }
