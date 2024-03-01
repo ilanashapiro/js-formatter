@@ -85,7 +85,12 @@ export function createImportObject(innerPluginExports?: WebAssembly.Exports): We
 }
 
 export interface ResponseLike {
+  status: number;
   arrayBuffer(): Promise<BufferSource>;
+  text(): Promise<string>;
+  headers: {
+    get(name: string): string | null;
+  };
 }
 
 /**
