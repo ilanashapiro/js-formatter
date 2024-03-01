@@ -69,18 +69,17 @@ export interface PluginInfo {
 /**
  * Creates the WebAssembly import object, if necessary.
  */
-export function createImportObject(): WebAssembly.Imports {
-  // for now, use an identity object
+export function createImportObject(innerPluginExports?: WebAssembly.Exports): WebAssembly.Imports {
   return {
     dprint: {
-      "host_clear_bytes": () => {},
-      "host_read_buffer": () => {},
-      "host_write_buffer": () => {},
-      "host_take_file_path": () => {},
-      "host_take_override_config": () => {},
-      "host_format": () => 0, // no change
-      "host_get_formatted_text": () => 0, // zero length
-      "host_get_error_text": () => 0, // zero length
+      "host_clear_bytes": innerPluginExports ? innerPluginExports.host_clear_bytes : (() => {}),
+      "host_read_buffer": innerPluginExports ? innerPluginExports.host_read_buffer : (() => {}),
+      "host_write_buffer": innerPluginExports ? innerPluginExports.host_write_buffer : (() => {}),
+      "host_take_file_path": innerPluginExports ? innerPluginExports.host_take_file_path : (() => {}),
+      "host_take_override_config": innerPluginExports ? innerPluginExports.host_take_override_config : (() => {}),
+      "host_format": innerPluginExports ? innerPluginExports.host_format : (() => 0), // no change
+      "host_get_formatted_text": innerPluginExports ? innerPluginExports.host_get_formatted_text : (() => 0), // zero length
+      "host_get_error_text": innerPluginExports ? innerPluginExports.host_get_error_text : (() => 0), // zero length
     },
   };
 }
@@ -95,20 +94,30 @@ export interface ResponseLike {
  * @param response - The streaming source to create the formatter from.
  */
 export function createStreaming(
-  response: Promise<ResponseLike>,
-): Promise<Formatter[]> {
-  if (typeof WebAssembly.instantiateStreaming === "function") {
-    return response
-    .then((resolvedResponse) => resolvedResponse.arrayBuffer())
-    .then((buffer) => WebAssembly.instantiate(buffer, createImportObject()))
-    .then((obj) => createFromInstance([obj.instance]));
+  pluginResponse: Promise<ResponseLike>,
+  nestedPluginResponse: Promise<ResponseLike>
+): Promise<Formatter> {
+  if (typeof WebAssembly.instantiate === "function") {
+    return Promise.all([pluginResponse, nestedPluginResponse])
+    .then(([resolvedPluginResponse, resolvedNestedPluginResponse]) => [resolvedPluginResponse.arrayBuffer(), resolvedNestedPluginResponse.arrayBuffer()])
+    .then(([pluginBuffer, nestedPluginBuffer]) => Promise.all([pluginBuffer, nestedPluginBuffer]))
+    .then(([resolvedPluginBuffer, resolvedNestedPluginBuffer]) => Promise.all([resolvedPluginBuffer, WebAssembly.instantiate(resolvedNestedPluginBuffer)]))
+    .then(([resolvedPluginBuffer, nestedPluginObj]) => WebAssembly.instantiate(resolvedPluginBuffer, createImportObject(nestedPluginObj.instance.exports)))
+    .then((pluginObj) => createFromInstance(pluginObj.instance));
+    
+    // return pluginResponses
+    // .then((resolvedResponse) => resolvedResponse.arrayBuffer())
+    // .then((buffer) => WebAssembly.instantiate(buffer, createImportObject(null)))
+    // .then((obj) => createFromInstance(obj.instance));
   } else {
     // fallback for node.js
-    return getArrayBuffer()
-      .then((buffer) => createFromBuffer(buffer));
+    return Promise.all([pluginResponse, nestedPluginResponse])
+    .then(([resolvedPluginResponse, resolvedNestedPluginResponse]) => [getArrayBuffer(resolvedPluginResponse), getArrayBuffer(resolvedNestedPluginResponse)])
+    .then(([b1, b2])=>Promise.all([b1,b2]))
+      .then(([buffer, nestedBuffer]) => createFromBuffer(buffer, nestedBuffer));
   }
 
-  function getArrayBuffer() {
+  function getArrayBuffer(response: ResponseLike | Promise<any>) {
     if (isResponse(response)) {
       return response.arrayBuffer();
     } else {
@@ -125,13 +134,18 @@ export function createStreaming(
  * Creates a formatter from the specified wasm module bytes.
  * @param wasmModuleBuffer - The buffer of the wasm module.
  */
-export function createFromBuffer(wasmModuleBuffer: BufferSource): Formatter[] {
-  const wasmModule = new WebAssembly.Module(wasmModuleBuffer);
-  const wasmInstance = new WebAssembly.Instance(
-    wasmModule,
+export function createFromBuffer(wasmPrimaryModuleBuffer: BufferSource, wasmInnerModuleBuffer: BufferSource): Formatter {
+  const wasmPrimaryModule = new WebAssembly.Module(wasmPrimaryModuleBuffer);
+  const wasmInnerModule = new WebAssembly.Module(wasmInnerModuleBuffer);
+  const wasmInnerInstance = new WebAssembly.Instance(
+    wasmInnerModule,
     createImportObject(),
   );
-  return createFromInstance([wasmInstance]);
+  const wasmPrimaryInstance = new WebAssembly.Instance(
+    wasmPrimaryModule,
+    createImportObject(wasmInnerInstance.exports),
+  );
+  return createFromInstance(wasmPrimaryInstance);
 }
 
 /**
@@ -139,10 +153,8 @@ export function createFromBuffer(wasmModuleBuffer: BufferSource): Formatter[] {
  * @param wasmInstance - The WebAssembly instance.
  */
 export function createFromInstance(
-  wasmInstances: WebAssembly.Instance[],
-): Formatter[] {
-  let formatters = <Formatter[]>[]
-  wasmInstances.forEach(wasmInstance => {
+  wasmInstance: WebAssembly.Instance,
+): Formatter {
     // deno-lint-ignore no-explicit-any
     const wasmExports = wasmInstance.exports as any;
     const {
@@ -199,7 +211,7 @@ export function createFromInstance(
     const bufferSize = get_wasm_memory_buffer_size();
     let configSet = false;
 
-    const instance = {
+    return {
       setConfig(globalConfig, pluginConfig) {
         setConfig(globalConfig, pluginConfig);
       },
@@ -224,6 +236,9 @@ export function createFromInstance(
         return receiveString(length);
       },
       formatText(filePath, fileText, overrideConfig) {
+        // const filePathParts = filePath.split('.');
+        // const extension = filePathParts[filePathParts.length - 1]
+        // console.log("HERE", filePath, fileText, overrideConfig, "DONE")
         setConfigIfNotSet();
         if (overrideConfig != null) {
           if (pluginSchemaVersion === 2) {
@@ -239,6 +254,7 @@ export function createFromInstance(
 
         sendString(fileText);
         const responseCode = format();
+        console.log(wasmExports.memory)
         switch (responseCode) {
           case 0: // no change
             return fileText;
@@ -250,9 +266,7 @@ export function createFromInstance(
             throw new Error(`Unexpected response code: ${responseCode}`);
         }
       }
-    } as Formatter;
-
-    formatters.push(instance)
+    };
 
     function setConfigIfNotSet() {
       if (!configSet) {
@@ -318,6 +332,4 @@ export function createFromInstance(
         length,
       );
     }
-  });
-  return formatters;
 }
